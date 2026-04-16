@@ -4316,21 +4316,43 @@ class AIAgent:
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
+        final_messages = messages or []
+        session_meta = None
+        if self._session_db and self.session_id:
+            try:
+                if not final_messages:
+                    final_messages = self._session_db.get_messages(self.session_id) or []
+            except Exception:
+                pass
+            try:
+                session_meta = self._session_db.get_session(self.session_id)
+            except Exception:
+                session_meta = None
         if self._memory_manager:
             try:
-                self._memory_manager.on_session_end(messages or [])
+                self._memory_manager.on_session_end(final_messages)
             except Exception:
                 pass
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
+        try:
+            if self.session_id:
+                from agent.vault_projection import write_session_projection
+                write_session_projection(
+                    session_id=self.session_id,
+                    messages=final_messages,
+                    session_meta=session_meta or {},
+                )
+        except Exception:
+            pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
         if hasattr(self, "context_compressor") and self.context_compressor:
             try:
                 self.context_compressor.on_session_end(
                     self.session_id or "",
-                    messages or [],
+                    final_messages,
                 )
             except Exception:
                 pass
@@ -8815,25 +8837,38 @@ class AIAgent:
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
+            action = function_args.get("action")
+            content = function_args.get("content", "")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
-                action=function_args.get("action"),
+                action=action,
                 target=target,
-                content=function_args.get("content"),
+                content=content,
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
-            if self._memory_manager and function_args.get("action") in ("add", "replace"):
+            if self._memory_manager and action in ("add", "replace"):
                 try:
                     self._memory_manager.on_memory_write(
-                        function_args.get("action", ""),
+                        action,
                         target,
-                        function_args.get("content", ""),
+                        content,
                         metadata=self._build_memory_write_metadata(
                             task_id=effective_task_id,
                             tool_call_id=tool_call_id,
                         ),
+                    )
+                except Exception:
+                    pass
+            if action in ("add", "replace", "remove"):
+                try:
+                    from agent.vault_projection import sync_memory_projection
+                    sync_memory_projection(
+                        action=action,
+                        target=target,
+                        content=content,
+                        session_id=self.session_id or None,
                     )
                 except Exception:
                     pass

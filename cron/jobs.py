@@ -411,6 +411,16 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _sync_cron_projection_note(jobs: Optional[List[Dict[str, Any]]] = None):
+    """Best-effort vault mirror for cron job registry."""
+    try:
+        from agent.vault_projection import sync_cron_projection
+        effective_jobs = jobs if jobs is not None else load_jobs()
+        sync_cron_projection(jobs=[_apply_skill_fields(j) for j in effective_jobs])
+    except Exception:
+        pass
+
+
 def create_job(
     prompt: str,
     schedule: str,
@@ -538,6 +548,7 @@ def create_job(
     jobs = load_jobs()
     jobs.append(job)
     save_jobs(jobs)
+    _sync_cron_projection_note(jobs)
 
     return job
 
@@ -603,6 +614,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         jobs[i] = updated
         save_jobs(jobs)
+        _sync_cron_projection_note(jobs)
         return _apply_skill_fields(jobs[i])
     return None
 
@@ -663,6 +675,7 @@ def remove_job(job_id: str) -> bool:
     jobs = [j for j in jobs if j["id"] != job_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
+        _sync_cron_projection_note(jobs)
         return True
     return False
 

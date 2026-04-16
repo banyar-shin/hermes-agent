@@ -379,6 +379,11 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
+    try:
+        from agent.vault_projection import sync_skills_projection
+        sync_skills_projection()
+    except Exception:
+        pass
     return result
 
 
@@ -411,11 +416,17 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated.",
         "path": str(existing["path"]),
     }
+    try:
+        from agent.vault_projection import sync_skills_projection
+        sync_skills_projection()
+    except Exception:
+        pass
+    return result
 
 
 def _patch_skill(
@@ -698,6 +709,11 @@ def skill_manage(
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+        try:
+            from agent.vault_projection import sync_skills_projection
+            sync_skills_projection()
         except Exception:
             pass
 
