@@ -117,6 +117,83 @@ def test_sync_cron_projection_writes_job_registry(tmp_path, monkeypatch):
     assert "scripts/digest.py" in text
 
 
+def test_sync_maintenance_stage_projection_writes_staging_notes(tmp_path, monkeypatch):
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path / "vault"))
+
+    vault = tmp_path / "vault"
+    sessions_dir = vault / "nexus" / "sessions" / "2026"
+    sessions_dir.mkdir(parents=True)
+
+    (sessions_dir / "2026-04-16-session-a.md").write_text(
+        """---
+id: session-a
+type: nexus-session
+date: 2026-04-16
+session_id: a
+source: discord
+title: Build second brain mirrors
+message_count: 2
+---
+
+# Session Projection
+
+## Summary
+- Title: Build second brain mirrors
+- First user message: Banrawr wants Nexus to build the second-brain projection for hermes-agent using Obsidian and tmux.
+- Last assistant message: Claude and Codex can help with the Nexus control plane.
+
+## Curated links
+- [[nexus/ops/nexus-vault-brain-spec]]
+- [[knowledge/maps/current-focus]]
+""",
+        encoding="utf-8",
+    )
+    (sessions_dir / "2026-04-16-session-b.md").write_text(
+        """---
+id: session-b
+type: nexus-session
+date: 2026-04-16
+session_id: b
+source: cli
+title: Extend second brain maintenance
+message_count: 2
+---
+
+# Session Projection
+
+## Summary
+- Title: Extend second brain maintenance
+- First user message: Banrawr wants Nexus to add maintenance staging for the second-brain vault and hermes-agent runtime.
+- Last assistant message: Claude should review the Obsidian maintenance flow.
+""",
+        encoding="utf-8",
+    )
+
+    from agent import vault_projection as vp
+
+    inbox_path = vp.sync_maintenance_stage_projection(date_str="2026-04-16")
+
+    assert inbox_path is not None
+    inbox_text = (vault / "nexus" / "maintenance" / "inbox" / "2026-04-16.md").read_text(encoding="utf-8")
+    merge_text = (vault / "nexus" / "maintenance" / "merge-candidates.md").read_text(encoding="utf-8")
+    orphan_text = (vault / "nexus" / "maintenance" / "orphans.md").read_text(encoding="utf-8")
+
+    assert "## Candidate people" in inbox_text
+    assert "Banrawr" in inbox_text
+    assert "Nexus" in inbox_text
+    assert "## Candidate projects" in inbox_text
+    assert "second-brain" in inbox_text
+    assert "hermes-agent" in inbox_text
+    assert "## Candidate concepts" in inbox_text
+    assert "maintenance staging" in inbox_text
+    assert "[[nexus/sessions/2026/2026-04-16-session-a]]" in inbox_text
+    assert "[[nexus/sessions/2026/2026-04-16-session-b]]" in inbox_text
+    assert "needs more links" in orphan_text
+    assert "2026-04-16-session-b" in orphan_text
+    assert "potential overlap" in merge_text
+    assert "second brain" in merge_text.lower()
+
+
 def test_projection_noops_without_vault_path(tmp_path, monkeypatch):
     monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
@@ -127,3 +204,4 @@ def test_projection_noops_without_vault_path(tmp_path, monkeypatch):
     assert vp.write_session_projection(session_id="s1", messages=[]) is None
     assert vp.sync_skills_projection(skill_dirs=[]) is None
     assert vp.sync_cron_projection(jobs=[]) is None
+    assert vp.sync_maintenance_stage_projection(date_str="2026-04-16") is None

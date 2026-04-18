@@ -12,6 +12,7 @@ Uses discord.py library for:
 import asyncio
 import logging
 import os
+import shlex
 import struct
 import subprocess
 import tempfile
@@ -116,6 +117,75 @@ def _build_allowed_mentions():
         users=_b("DISCORD_ALLOW_MENTION_USERS", True),
         replied_user=_b("DISCORD_ALLOW_MENTION_REPLIED_USER", True),
     )
+
+
+def _build_exec_approval_summary(command: str, reason: str) -> str:
+    """Generate a short plain-English summary for Discord approval prompts."""
+    normalized = re.sub(r"\s+", " ", command).strip()
+    lower = normalized.lower()
+
+    action_map = [
+        (("tmux respawn-pane", "tmux kill-pane", "tmux kill-session", "tmux new-session", "tmux send-keys"), "manage tmux panes/sessions"),
+        (("git fetch",), "fetch remote git refs"),
+        (("git pull",), "pull remote git changes"),
+        (("git branch",), "create or inspect git branches"),
+        (("git checkout", "git switch"), "switch git branches"),
+        (("git reset --hard",), "hard-reset tracked files to match a git target"),
+        (("git reset",), "reset git state"),
+        (("git status",), "inspect git status"),
+        (("git clean",), "delete untracked files from the working tree"),
+        (("rm -rf", "rm -r", "rm "), "delete files or directories"),
+        (("mv ",), "move or rename files"),
+        (("cp ",), "copy files"),
+        (("chmod ",), "change file permissions"),
+        (("chown ",), "change file ownership"),
+        (("docker compose", "docker "), "manage Docker resources"),
+        (("kubectl ",), "manage Kubernetes resources"),
+        (("npm ", "pnpm ", "yarn "), "run JavaScript package-manager tasks"),
+        (("python ", "python3 ", "uv run ", "pytest "), "run Python commands or tests"),
+        (("lsof ", "netstat ", "ss "), "inspect local network listeners"),
+    ]
+
+    actions = []
+    for triggers, label in action_map:
+        if any(trigger in lower for trigger in triggers) and label not in actions:
+            actions.append(label)
+
+    branch_target = None
+    for marker in ("git checkout ", "git switch "):
+        if marker in lower:
+            try:
+                tokens = shlex.split(normalized)
+            except ValueError:
+                tokens = normalized.split()
+            for i, token in enumerate(tokens[:-1]):
+                pair = f"{token} {tokens[i + 1]}".lower()
+                if pair in {"git checkout", "git switch"}:
+                    branch_target = tokens[i + 2] if i + 2 < len(tokens) else None
+                    break
+            if branch_target:
+                break
+
+    summary_parts = []
+    if actions:
+        if len(actions) == 1:
+            summary_parts.append(f"This command will {actions[0]}.")
+        elif len(actions) == 2:
+            summary_parts.append(f"This command will {actions[0]} and {actions[1]}.")
+        else:
+            summary_parts.append(
+                f"This command will {', '.join(actions[:-1])}, and {actions[-1]}."
+            )
+    else:
+        summary_parts.append("This command runs a shell script with multiple steps.")
+
+    if branch_target and ("git checkout" in lower or "git switch" in lower):
+        summary_parts.append(f"It targets the `{branch_target}` branch.")
+    elif reason:
+        reason_text = reason.rstrip(".")
+        summary_parts.append(f"Approval was triggered because it matched: {reason_text}.")
+
+    return " ".join(summary_parts[:2])
 
 
 class VoiceReceiver:
@@ -2892,6 +2962,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 title="⚠️ Command Approval Required",
                 description=f"```\n{cmd_display}\n```",
                 color=discord.Color.orange(),
+            )
+            embed.add_field(
+                name="What this does",
+                value=_build_exec_approval_summary(command, description),
+                inline=False,
             )
             embed.add_field(name="Reason", value=description, inline=False)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -235,3 +236,216 @@ def sync_cron_projection(*, jobs: list[dict[str, Any]], vault_path: Optional[Pat
     )
     _write_text(path, content)
     return str(path)
+
+
+_PEOPLE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "Banrawr": (r"\bbanrawr\b",),
+    "Nexus": (r"\bnexus\b",),
+    "Claude": (r"\bclaude\b",),
+    "Codex": (r"\bcodex\b",),
+    "Chrono": (r"\bchrono\b",),
+    "Hermes": (r"\bhermes\b",),
+    "Terr": (r"\bterr\b",),
+    "Mnemo": (r"\bmnemo\b",),
+}
+
+_PROJECT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "second-brain": (r"\bsecond[- ]brain\b",),
+    "hermes-agent": (r"\bhermes-agent\b",),
+    "Obsidian": (r"\bobsidian\b",),
+    "tmux": (r"\btmux\b",),
+    "Discord control plane": (r"\bdiscord control plane\b", r"\bcontrol plane\b"),
+}
+
+_CONCEPT_PATTERNS: dict[str, tuple[str, ...]] = {
+    "maintenance staging": (r"\bmaintenance staging\b",),
+    "truthful mirrors": (r"\btruthful mirrors\b",),
+    "vault projection": (r"\bvault projection\b", r"\bprojection layer\b"),
+    "deterministic mirrors": (r"\bdeterministic mirrors\b", r"\bdeterministic mirror\b"),
+}
+
+_TITLE_STOPWORDS = {
+    "a", "an", "and", "the", "for", "to", "of", "in", "on", "with", "from",
+    "build", "extend", "add", "using", "use", "into",
+}
+
+
+def _session_note_link(path: Path, vault: Path) -> str:
+    return f"[[{path.relative_to(vault).with_suffix('').as_posix()}]]"
+
+
+def _scan_pattern_table(text: str, table: dict[str, tuple[str, ...]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for label, patterns in table.items():
+        total = 0
+        for pattern in patterns:
+            total += len(re.findall(pattern, text, flags=re.IGNORECASE))
+        if total > 0:
+            counts[label] = total
+    return counts
+
+
+def _load_session_notes(vault: Path) -> list[dict[str, Any]]:
+    notes: list[dict[str, Any]] = []
+    sessions_root = vault / "nexus" / "sessions"
+    if not sessions_root.exists():
+        return notes
+
+    for note_path in sorted(sessions_root.rglob("*.md")):
+        if note_path.name in {"index.md", "sessions.md"}:
+            continue
+        text = note_path.read_text(encoding="utf-8")
+        frontmatter, _body = parse_frontmatter(text)
+        notes.append(
+            {
+                "path": note_path,
+                "text": text,
+                "title": str(frontmatter.get("title") or note_path.stem),
+                "source": str(frontmatter.get("source") or "unknown"),
+                "date": str(frontmatter.get("date") or "unknown"),
+            }
+        )
+    return notes
+
+
+def _collect_candidates(notes: list[dict[str, Any]], vault: Path, table: dict[str, tuple[str, ...]]) -> dict[str, list[str]]:
+    aggregated: dict[str, list[str]] = {}
+    for note in notes:
+        matches = _scan_pattern_table(note["text"], table)
+        if not matches:
+            continue
+        link = _session_note_link(note["path"], vault)
+        for label in sorted(matches):
+            aggregated.setdefault(label, []).append(link)
+    return aggregated
+
+
+def _render_candidate_section(title: str, candidates: dict[str, list[str]]) -> str:
+    lines = [f"## {title}"]
+    if not candidates:
+        lines.append("- _None staged._")
+        return "\n".join(lines)
+    ordered = sorted(candidates.items(), key=lambda item: (-len(dict.fromkeys(item[1])), item[0]))
+    for label, links in ordered:
+        unique_links = sorted(dict.fromkeys(links))
+        preview = unique_links[:8]
+        remaining = len(unique_links) - len(preview)
+        suffix = f" (+{remaining} more)" if remaining > 0 else ""
+        lines.append(
+            f"- **{label}** — {len(unique_links)} session note(s). Examples: {', '.join(preview)}{suffix}"
+        )
+    return "\n".join(lines)
+
+
+def _collect_orphans(notes: list[dict[str, Any]], vault: Path) -> list[str]:
+    rows: list[str] = []
+    for note in notes:
+        if "## Curated links" in note["text"]:
+            continue
+        rows.append(f"- needs more links: {_session_note_link(note['path'], vault)}")
+    return rows
+
+
+def _title_tokens(title: str) -> set[str]:
+    tokens = {tok for tok in re.findall(r"[a-z0-9]+", title.lower()) if tok not in _TITLE_STOPWORDS}
+    return {tok for tok in tokens if len(tok) >= 2}
+
+
+def _collect_merge_candidates(notes: list[dict[str, Any]], vault: Path) -> list[str]:
+    rows: list[str] = []
+    for idx, left in enumerate(notes):
+        left_tokens = _title_tokens(left["title"])
+        if not left_tokens:
+            continue
+        for right in notes[idx + 1:]:
+            right_tokens = _title_tokens(right["title"])
+            overlap_set = left_tokens & right_tokens
+            if len(overlap_set) < 2:
+                continue
+            ordered_overlap = [
+                tok for tok in re.findall(r"[a-z0-9]+", left["title"].lower())
+                if tok in overlap_set and tok not in _TITLE_STOPWORDS
+            ]
+            rows.append(
+                "- potential overlap: "
+                f"{_session_note_link(left['path'], vault)} <-> {_session_note_link(right['path'], vault)} "
+                f"| shared phrase: `{' '.join(ordered_overlap)}` "
+                f"| shared title tokens: `{', '.join(ordered_overlap)}`"
+            )
+    return rows
+
+
+def sync_maintenance_stage_projection(*, date_str: Optional[str] = None, vault_path: Optional[Path] = None) -> Optional[str]:
+    vault = vault_path or get_obsidian_vault_path()
+    if vault is None:
+        return None
+
+    now = _hermes_now()
+    effective_date = date_str or now.strftime("%Y-%m-%d")
+    notes = _load_session_notes(vault)
+
+    people = _collect_candidates(notes, vault, _PEOPLE_PATTERNS)
+    projects = _collect_candidates(notes, vault, _PROJECT_PATTERNS)
+    concepts = _collect_candidates(notes, vault, _CONCEPT_PATTERNS)
+    orphan_rows = _collect_orphans(notes, vault)
+    merge_rows = _collect_merge_candidates(notes, vault)
+    orphan_preview = orphan_rows[:50]
+    orphan_remaining = len(orphan_rows) - len(orphan_preview)
+
+    inbox_path = vault / "nexus" / "maintenance" / "inbox" / f"{effective_date}.md"
+    candidate_links = []
+    for label, links in list(people.items())[:2] + list(projects.items())[:2]:
+        if links:
+            candidate_links.append(f"- **{label}** -> {links[0]}")
+    inbox = (
+        f"---\n"
+        f"type: nexus-maintenance-inbox\n"
+        f"date: {effective_date}\n"
+        f"status: staged\n"
+        f"source_window: session corpus backfill\n"
+        f"review_state: needs-human-review\n"
+        f"last_synced: {now.isoformat()}\n"
+        f"---\n\n"
+        f"# Maintenance Inbox — {effective_date}\n\n"
+        f"Deterministic staging output derived from projected session notes.\n\n"
+        f"{_render_candidate_section('Candidate people', people)}\n\n"
+        f"{_render_candidate_section('Candidate projects', projects)}\n\n"
+        f"{_render_candidate_section('Candidate concepts', concepts)}\n\n"
+        f"## Candidate links\n"
+        f"{chr(10).join(candidate_links) if candidate_links else '- _None staged._'}\n\n"
+        f"## Deferred\n"
+        f"- Do not create canonical people/project/concept notes automatically from this staging output.\n"
+        f"- Review ambiguous candidates manually before promotion.\n\n"
+        f"## Provenance\n"
+        f"- session note count: {len(notes)}\n"
+        f"- session index: [[nexus/sessions/index]]\n"
+        f"- merge candidates: [[nexus/maintenance/merge-candidates]]\n"
+        f"- orphans: [[nexus/maintenance/orphans]]\n"
+    )
+    _write_text(inbox_path, inbox)
+
+    merge_path = vault / "nexus" / "maintenance" / "merge-candidates.md"
+    merge_text = (
+        f"---\n"
+        f"type: nexus-merge-candidates\n"
+        f"last_synced: {now.isoformat()}\n"
+        f"---\n\n"
+        f"# Merge Candidates\n\n"
+        f"{chr(10).join(merge_rows) if merge_rows else '- _None staged._'}\n"
+    )
+    _write_text(merge_path, merge_text)
+
+    orphan_path = vault / "nexus" / "maintenance" / "orphans.md"
+    orphan_text = (
+        f"---\n"
+        f"type: nexus-orphans\n"
+        f"last_synced: {now.isoformat()}\n"
+        f"---\n\n"
+        f"# Orphans\n\n"
+        f"- total weakly linked notes: {len(orphan_rows)}\n"
+        f"{chr(10).join(orphan_preview) if orphan_preview else '- _None staged._'}\n"
+        f"{'- ... truncated for readability.' if orphan_remaining > 0 else ''}\n"
+    )
+    _write_text(orphan_path, orphan_text)
+
+    return str(inbox_path)
