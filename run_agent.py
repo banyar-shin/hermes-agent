@@ -4339,12 +4339,16 @@ class AIAgent:
                 pass
         try:
             if self.session_id:
-                from agent.vault_projection import write_session_projection
+                from agent.vault_projection import (
+                    sync_maintenance_stage_projection,
+                    write_session_projection,
+                )
                 write_session_projection(
                     session_id=self.session_id,
                     messages=final_messages,
                     session_meta=session_meta or {},
                 )
+                sync_maintenance_stage_projection()
         except Exception:
             pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)

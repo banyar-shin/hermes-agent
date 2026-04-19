@@ -83,6 +83,21 @@ git reset --hard origin/team/shared-auth-embed-share
     assert "team/shared-auth-embed-share" in summary
 
 
+@pytest.mark.parametrize(
+    ("command", "expected_branch"),
+    [
+        ("git switch -c feature/test", "feature/test"),
+        ("git checkout -b feature/test origin/main", "feature/test"),
+        ("git switch --create feature/test", "feature/test"),
+    ],
+)
+def test_build_exec_approval_summary_parses_branch_creation_flags(command, expected_branch):
+    summary = _build_exec_approval_summary(command, "shell command via -c/-lc flag")
+
+    assert "switch git branches" in summary
+    assert f"`{expected_branch}`" in summary
+
+
 @pytest.mark.asyncio
 async def test_send_exec_approval_includes_plain_english_summary_field():
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))

@@ -194,6 +194,44 @@ message_count: 2
     assert "second brain" in merge_text.lower()
 
 
+def test_sync_maintenance_stage_projection_skips_unreadable_session_notes(tmp_path, monkeypatch):
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(tmp_path / "vault"))
+
+    vault = tmp_path / "vault"
+    sessions_dir = vault / "nexus" / "sessions" / "2026"
+    sessions_dir.mkdir(parents=True)
+
+    (sessions_dir / "2026-04-16-session-good.md").write_text(
+        """---
+id: session-good
+type: nexus-session
+date: 2026-04-16
+session_id: good
+source: discord
+title: Build second brain mirrors
+message_count: 2
+---
+
+# Session Projection
+
+## Summary
+- First user message: Banrawr wants Nexus to keep second-brain maintenance healthy.
+""",
+        encoding="utf-8",
+    )
+    (sessions_dir / "2026-04-16-session-bad.md").write_bytes(b"\xff\xfe\x00broken")
+
+    from agent import vault_projection as vp
+
+    inbox_path = vp.sync_maintenance_stage_projection(date_str="2026-04-16")
+
+    assert inbox_path is not None
+    inbox_text = (vault / "nexus" / "maintenance" / "inbox" / "2026-04-16.md").read_text(encoding="utf-8")
+    assert "second-brain" in inbox_text
+    assert "2026-04-16-session-good" in inbox_text
+    assert "2026-04-16-session-bad" not in inbox_text
+
+
 def test_projection_noops_without_vault_path(tmp_path, monkeypatch):
     monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

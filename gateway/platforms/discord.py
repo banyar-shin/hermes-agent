@@ -119,6 +119,30 @@ def _build_allowed_mentions():
     )
 
 
+def _extract_git_branch_target(command: str) -> Optional[str]:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+
+    for i, token in enumerate(tokens[:-1]):
+        pair = f"{token} {tokens[i + 1]}".lower()
+        if pair not in {"git checkout", "git switch"}:
+            continue
+
+        args = tokens[i + 2 :]
+        if not args:
+            return None
+
+        if args[0] in {"-b", "-B", "-c", "--create", "-C", "--orphan"}:
+            return args[1] if len(args) > 1 else None
+        if args[0].startswith("-"):
+            continue
+        return args[0]
+
+    return None
+
+
 def _build_exec_approval_summary(command: str, reason: str) -> str:
     """Generate a short plain-English summary for Discord approval prompts."""
     normalized = re.sub(r"\s+", " ", command).strip()
@@ -151,20 +175,7 @@ def _build_exec_approval_summary(command: str, reason: str) -> str:
         if any(trigger in lower for trigger in triggers) and label not in actions:
             actions.append(label)
 
-    branch_target = None
-    for marker in ("git checkout ", "git switch "):
-        if marker in lower:
-            try:
-                tokens = shlex.split(normalized)
-            except ValueError:
-                tokens = normalized.split()
-            for i, token in enumerate(tokens[:-1]):
-                pair = f"{token} {tokens[i + 1]}".lower()
-                if pair in {"git checkout", "git switch"}:
-                    branch_target = tokens[i + 2] if i + 2 < len(tokens) else None
-                    break
-            if branch_target:
-                break
+    branch_target = _extract_git_branch_target(normalized)
 
     summary_parts = []
     if actions:

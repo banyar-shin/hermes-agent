@@ -294,7 +294,10 @@ def _load_session_notes(vault: Path) -> list[dict[str, Any]]:
     for note_path in sorted(sessions_root.rglob("*.md")):
         if note_path.name in {"index.md", "sessions.md"}:
             continue
-        text = note_path.read_text(encoding="utf-8")
+        try:
+            text = note_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
         frontmatter, _body = parse_frontmatter(text)
         notes.append(
             {
