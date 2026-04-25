@@ -9007,10 +9007,13 @@ class GatewayRunner:
         )
 
     async def _inject_watch_notification(self, synth_text: str, evt: dict) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+        """Deliver a watch-pattern notification directly to the originating chat.
 
-        Routing must come from the queued watch event itself, not from whatever
-        foreground message happened to be active when the queue was drained.
+        Watch-pattern matches are operational status messages, not new user turns.
+        Re-injecting them through ``handle_message()`` can queue a synthetic follow-up
+        in the same session and produce an extra assistant response after the real
+        answer. Send them directly instead so the user sees the notification without
+        re-entering the agent loop.
         """
         source = self._build_process_event_source(evt)
         if not source:
@@ -9028,21 +9031,11 @@ class GatewayRunner:
         if not adapter:
             return
         try:
-            synth_event = MessageEvent(
-                text=synth_text,
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
-            logger.info(
-                "Watch pattern notification — injecting for %s chat=%s thread=%s",
-                platform_name,
-                source.chat_id,
-                source.thread_id,
-            )
-            await adapter.handle_message(synth_event)
+            send_meta = {"thread_id": source.thread_id} if getattr(source, "thread_id", None) else None
+            logger.info("Watch pattern notification — sending directly for %s", platform_name)
+            await adapter.send(source.chat_id, synth_text, metadata=send_meta)
         except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
+            logger.error("Watch notification delivery error: %s", e)
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """

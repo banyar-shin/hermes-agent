@@ -284,6 +284,65 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
 
 
 @pytest.mark.asyncio
+async def test_watch_notifications_send_directly_without_agent_reentry(monkeypatch, tmp_path):
+    """Watch-pattern notifications should be sent directly, not re-injected as user-like turns."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+
+    event = {
+        "session_id": "proc_watch_1",
+        "platform": "discord",
+        "chat_type": "thread",
+        "chat_id": "chat-123",
+        "thread_id": "thread-456",
+        "user_id": "user-42",
+        "user_name": "alice",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: watch matched]", event)
+
+    assert adapter.handle_message.await_count == 0
+    assert adapter.send.await_count == 1
+    assert adapter.send.await_args.args[:2] == ("chat-123", "[SYSTEM: watch matched]")
+    assert adapter.send.await_args.kwargs["metadata"] == {"thread_id": "thread-456"}
+
+
+@pytest.mark.asyncio
+async def test_watch_notifications_send_directly_without_thread_metadata(monkeypatch, tmp_path):
+    """Non-threaded watch notifications should still send directly without thread metadata."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+
+    event = {
+        "session_id": "proc_watch_2",
+        "platform": "discord",
+        "chat_type": "group",
+        "chat_id": "chat-999",
+        "user_id": "user-42",
+        "user_name": "alice",
+    }
+
+    await runner._inject_watch_notification("[SYSTEM: watch matched]", event)
+
+    assert adapter.handle_message.await_count == 0
+    assert adapter.send.await_count == 1
+    assert adapter.send.await_args.args[:2] == ("chat-999", "[SYSTEM: watch matched]")
+    assert adapter.send.await_args.kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
 async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     """A non-internal event with user_id=None should be silently dropped."""
     import gateway.run as gateway_run
